@@ -1,6 +1,8 @@
 use std::{
     fs::{canonicalize, read_to_string},
     path::{Path, PathBuf},
+    thread::sleep,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -24,18 +26,34 @@ struct HidId {
 
 fn main() -> Result<()> {
     let Args { path } = Args::try_parse()?;
-    let path = canonicalize(path)?;
-    println!("{:?}", path);
-    let id = find_id(&path).context(format!("cannot find device id for {path:?}"))?;
-    println!("{:?}", id);
+
+    let path = canonicalize(&path).context(format!("no device {path:?}"))?;
+    println!("path {path:?}");
+
+    let id = find_id(&path).context(format!("unable to extract id {path:?}"))?;
+    println!("id {id:?}");
 
     let hid_api = hidapi::HidApi::new()?;
+    let device = hid_api
+        .open(id.vendor, id.product)
+        .context("cannot open device")?;
 
-    let device = hid_api.open(id.vendor, id.product)?;
+    let mut rd_buffer = [0u8; 1 << 12];
+    let rd_size = device.get_report_descriptor(&mut rd_buffer)?;
+    let rd_buffer = rd_buffer[..rd_size].to_vec();
+    print_hex(&rd_buffer);
 
-    let mut buf = [0u8; 8];
-    let res = device.read(&mut buf[..])?;
-    println!("Read: {:?}", &buf[..res]);
+    let mut buffer = [0u8; 12];
+    loop {
+        match device.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes_read) => {
+                print_hex(&buffer[..bytes_read]);
+            }
+            Err(e) => eprintln!("Error reading from device: {}", e),
+        }
+        sleep(Duration::from_millis(10));
+    }
 
     Ok(())
 }
@@ -63,4 +81,11 @@ fn find_id(dev_path: &Path) -> Result<HidId> {
             16,
         )?,
     })
+}
+
+fn print_hex(data: &[u8]) {
+    for byte in data {
+        print!("{:02X} ", byte);
+    }
+    println!();
 }
