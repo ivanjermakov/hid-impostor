@@ -38,12 +38,13 @@ fn main() -> Result<()> {
                     println!("{:?} {:?}", key_event, key_code)
                 }
                 AbsoluteAxis(event, code, value) => {
-                    // println!("{:?} {:?} {}", event.event_type(), code, value);
+                    let pad = " ".repeat(12 * code.0 as usize);
+                    println!("{:?} {}{:?} {}", event.event_type(), pad, code, value);
                     let virt_ev = *AbsoluteAxisEvent::new(code, value);
                     virt_device.emit(&[virt_ev])?;
                 }
                 _ => {
-                    // println!("other {:?}", ev)
+                    println!("other {:?}", ev)
                 }
             }
         }
