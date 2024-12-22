@@ -16,6 +16,28 @@ struct Args {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct Mapping {
+    to_code: u16,
+    invert: bool,
+}
+
+impl Mapping {
+    fn from_abs(code: AbsoluteAxisCode) -> Self {
+        Self {
+            to_code: code.0,
+            invert: false,
+        }
+    }
+
+    fn from_abs_inv(code: AbsoluteAxisCode) -> Self {
+        Self {
+            to_code: code.0,
+            invert: true,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -30,6 +52,28 @@ fn main() -> Result<()> {
         println!("virt device available as {}", path?.display());
     }
 
+    let mapping = [
+        (
+            AbsoluteAxisCode::ABS_X,
+            Mapping::from_abs_inv(AbsoluteAxisCode::ABS_X),
+        ),
+        (
+            AbsoluteAxisCode::ABS_Y,
+            Mapping::from_abs_inv(AbsoluteAxisCode::ABS_Y),
+        ),
+        (
+            AbsoluteAxisCode::ABS_Z,
+            Mapping::from_abs(AbsoluteAxisCode::ABS_RX),
+        ),
+        (
+            AbsoluteAxisCode::ABS_RX,
+            Mapping::from_abs(AbsoluteAxisCode::ABS_RY),
+        ),
+    ]
+    .into_iter()
+    .collect::<HashMap<_, _>>();
+
+    let abs_infos = abs_infos(&device)?;
     loop {
         for ev in device.fetch_events()? {
             match ev.destructure() {
@@ -38,10 +82,22 @@ fn main() -> Result<()> {
                     println!("{:?} {:?}", key_event, key_code)
                 }
                 AbsoluteAxis(event, code, value) => {
-                    let pad = " ".repeat(12 * code.0 as usize);
-                    println!("{:?} {}{:?} {}", event.event_type(), pad, code, value);
-                    let virt_ev = *AbsoluteAxisEvent::new(code, value);
-                    virt_device.emit(&[virt_ev])?;
+                    if let Some(abs_info) = abs_infos.get(&code) {
+                        let pad = " ".repeat(14 * code.0 as usize);
+                        println!("{:?} {}{:?} {}", event.event_type(), pad, code, value);
+                        let mapping = mapping
+                            .get(&code)
+                            .copied()
+                            .unwrap_or(Mapping::from_abs(code));
+                        let value = if mapping.invert {
+                            abs_info.minimum() + (abs_info.maximum() - value)
+                        } else {
+                            value
+                        };
+                        let virt_ev =
+                            *AbsoluteAxisEvent::new(AbsoluteAxisCode(mapping.to_code), value);
+                        virt_device.emit(&[virt_ev])?;
+                    }
                 }
                 _ => {
                     println!("other {:?}", ev)
@@ -70,9 +126,7 @@ fn make_virt_device(device: &Device) -> Result<VirtualDevice> {
     ] {
         keys.insert(key);
     }
-    let abs_infos = device
-        .get_absinfo()?
-        .collect::<HashMap<AbsoluteAxisCode, AbsInfo>>();
+    let abs_infos = abs_infos(device)?;
     let virt_device = VirtualDeviceBuilder::new()?
         .name(xbox_name)
         .input_id(xbox_id)
@@ -87,6 +141,10 @@ fn make_virt_device(device: &Device) -> Result<VirtualDevice> {
         .with_absolute_axis(&abs_setup(AbsoluteAxisCode::ABS_HAT0Y, &abs_infos)?)?
         .build()?;
     Ok(virt_device)
+}
+
+fn abs_infos(device: &Device) -> Result<HashMap<AbsoluteAxisCode, AbsInfo>> {
+    Ok(device.get_absinfo()?.collect::<HashMap<_, _>>())
 }
 
 fn abs_setup(
