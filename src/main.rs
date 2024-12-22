@@ -144,7 +144,15 @@ fn make_virt_device(device: &Device) -> Result<VirtualDevice> {
 }
 
 fn abs_infos(device: &Device) -> Result<HashMap<AbsoluteAxisCode, AbsInfo>> {
-    Ok(device.get_absinfo()?.collect::<HashMap<_, _>>())
+    Ok(device
+        .get_absinfo()?
+        .map(|(code, i)| {
+            (
+                code,
+                AbsInfo::new(i.value(), i.minimum(), i.maximum(), 0, 0, i.resolution()),
+            )
+        })
+        .collect::<HashMap<_, _>>())
 }
 
 fn abs_setup(
