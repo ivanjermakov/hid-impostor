@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fs::canonicalize, path::PathBuf};
+use std::{collections::HashMap, fs::canonicalize, path::PathBuf, str::FromStr};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
 use evdev::{
     uinput::{VirtualDevice, VirtualDeviceBuilder},
@@ -14,9 +14,11 @@ use evdev::{
 struct Args {
     #[arg(value_parser = value_parser!(PathBuf))]
     path: PathBuf,
+    #[arg(short = 'm', long)]
+    mappings: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Mapping {
     to_code: u16,
     invert: bool,
@@ -52,27 +54,7 @@ fn main() -> Result<()> {
         println!("virt device available as {}", path?.display());
     }
 
-    let mapping = [
-        (
-            AbsoluteAxisCode::ABS_X,
-            Mapping::from_abs_inv(AbsoluteAxisCode::ABS_X),
-        ),
-        (
-            AbsoluteAxisCode::ABS_Y,
-            Mapping::from_abs_inv(AbsoluteAxisCode::ABS_Y),
-        ),
-        (
-            AbsoluteAxisCode::ABS_Z,
-            Mapping::from_abs(AbsoluteAxisCode::ABS_RX),
-        ),
-        (
-            AbsoluteAxisCode::ABS_RX,
-            Mapping::from_abs(AbsoluteAxisCode::ABS_RY),
-        ),
-    ]
-    .into_iter()
-    .collect::<HashMap<_, _>>();
-
+    let mappings = parse_mappings(&args.mappings).context("")?;
     let abs_infos = abs_infos(&device)?;
     loop {
         for ev in device.fetch_events()? {
@@ -85,7 +67,7 @@ fn main() -> Result<()> {
                     if let Some(abs_info) = abs_infos.get(&code) {
                         let pad = " ".repeat(14 * code.0 as usize);
                         println!("{:?} {}{:?} {}", event.event_type(), pad, code, value);
-                        let mapping = mapping
+                        let mapping = mappings
                             .get(&code)
                             .copied()
                             .unwrap_or(Mapping::from_abs(code));
@@ -163,4 +145,63 @@ fn abs_setup(
     let default_info = AbsInfo::new(axis_max / 2, 0, axis_max, 0, 0, 1);
     let info = abs_infos.get(&code).cloned().unwrap_or(default_info);
     Ok(UinputAbsSetup::new(code, info))
+}
+
+fn parse_mapping(input: &str) -> Result<(AbsoluteAxisCode, Mapping)> {
+    match input.split("=").collect::<Vec<_>>()[..] {
+        [l_op, r_op] => {
+            let l_op = <AbsoluteAxisCode as FromStr>::from_str(l_op)?;
+            let mapping = match r_op.split("-").collect::<Vec<_>>()[..] {
+                [r_op] => {
+                    let r_op = <AbsoluteAxisCode as FromStr>::from_str(r_op)?;
+                    Mapping::from_abs(r_op)
+                }
+                [_, r_op] => {
+                    let r_op = <AbsoluteAxisCode as FromStr>::from_str(r_op)?;
+                    Mapping::from_abs_inv(r_op)
+                }
+                _ => bail!("cannot parse right operand"),
+            };
+            Ok((l_op, mapping))
+        }
+        _ => bail!("cannot parse mapping"),
+    }
+}
+
+fn parse_mappings(input: &str) -> Result<HashMap<AbsoluteAxisCode, Mapping>> {
+    let res: HashMap<AbsoluteAxisCode, Mapping> =
+        input.split(",").map(parse_mapping).collect::<Result<_>>()?;
+    Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{parse_mappings, Mapping};
+    use evdev::AbsoluteAxisCode;
+    use std::collections::HashMap;
+
+    #[test]
+    fn should_parse_mappings() {
+        let input = "ABS_X=-ABS_X,ABS_Z=ABS_RX";
+        let expected = [
+            (
+                AbsoluteAxisCode::ABS_X,
+                Mapping {
+                    to_code: AbsoluteAxisCode::ABS_X.0,
+                    invert: true,
+                },
+            ),
+            (
+                AbsoluteAxisCode::ABS_Z,
+                Mapping {
+                    to_code: AbsoluteAxisCode::ABS_RX.0,
+                    invert: false,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        assert_eq!(expected, parse_mappings(input).expect("parsing failure"));
+    }
 }
