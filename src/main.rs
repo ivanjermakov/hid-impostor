@@ -15,7 +15,7 @@ struct Args {
     #[arg(value_parser = value_parser!(PathBuf))]
     path: PathBuf,
     #[arg(short = 'm', long)]
-    mappings: String,
+    mappings: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,7 +54,11 @@ fn main() -> Result<()> {
         println!("virt device available as {}", path?.display());
     }
 
-    let mappings = parse_mappings(&args.mappings).context("")?;
+    let mappings = match args.mappings {
+        Some(m) => parse_mappings(&m)?,
+        _ => HashMap::default(),
+    };
+    println!("{:?}", mappings);
     let abs_infos = abs_infos(&device)?;
     loop {
         for ev in device.fetch_events()? {
@@ -66,18 +70,25 @@ fn main() -> Result<()> {
                 AbsoluteAxis(event, code, value) => {
                     if let Some(abs_info) = abs_infos.get(&code) {
                         let pad = " ".repeat(14 * code.0 as usize);
-                        println!("{:?} {}{:?} {}", event.event_type(), pad, code, value);
-                        let mapping = mappings
-                            .get(&code)
-                            .copied()
-                            .unwrap_or(Mapping::from_abs(code));
+                        let mapping = mappings.get(&code).copied();
+                        if mapping.is_none() {
+                            continue;
+                        };
+                        let mapping = mapping.unwrap();
                         let value = if mapping.invert {
                             abs_info.minimum() + (abs_info.maximum() - value)
                         } else {
                             value
                         };
-                        let virt_ev =
-                            *AbsoluteAxisEvent::new(AbsoluteAxisCode(mapping.to_code), value);
+                        let target_code = AbsoluteAxisCode(mapping.to_code);
+                        println!(
+                            "{:?} {}{:?} {}",
+                            event.event_type(),
+                            pad,
+                            target_code,
+                            value
+                        );
+                        let virt_ev = *AbsoluteAxisEvent::new(target_code, value);
                         virt_device.emit(&[virt_ev])?;
                     }
                 }
@@ -141,7 +152,8 @@ fn abs_setup(
     code: AbsoluteAxisCode,
     abs_infos: &HashMap<AbsoluteAxisCode, AbsInfo>,
 ) -> Result<UinputAbsSetup> {
-    let axis_max = 256;
+    // TODO: use --mappings to map axes
+    let axis_max = abs_infos.values().next().unwrap().maximum();
     let default_info = AbsInfo::new(axis_max / 2, 0, axis_max, 0, 0, 1);
     let info = abs_infos.get(&code).cloned().unwrap_or(default_info);
     Ok(UinputAbsSetup::new(code, info))
@@ -150,19 +162,19 @@ fn abs_setup(
 fn parse_mapping(input: &str) -> Result<(AbsoluteAxisCode, Mapping)> {
     match input.split("=").collect::<Vec<_>>()[..] {
         [l_op, r_op] => {
-            let l_op = <AbsoluteAxisCode as FromStr>::from_str(l_op)?;
-            let mapping = match r_op.split("-").collect::<Vec<_>>()[..] {
-                [r_op] => {
-                    let r_op = <AbsoluteAxisCode as FromStr>::from_str(r_op)?;
-                    Mapping::from_abs(r_op)
+            let target_code = <AbsoluteAxisCode as FromStr>::from_str(l_op)?;
+            let (source_code, mapping) = match r_op.split("-").collect::<Vec<_>>()[..] {
+                [l_op] => {
+                    let source_code = <AbsoluteAxisCode as FromStr>::from_str(l_op)?;
+                    (source_code, Mapping::from_abs(target_code))
                 }
                 [_, r_op] => {
-                    let r_op = <AbsoluteAxisCode as FromStr>::from_str(r_op)?;
-                    Mapping::from_abs_inv(r_op)
+                    let source_code = <AbsoluteAxisCode as FromStr>::from_str(r_op)?;
+                    (source_code, Mapping::from_abs_inv(target_code))
                 }
                 _ => bail!("cannot parse right operand"),
             };
-            Ok((l_op, mapping))
+            Ok((source_code, mapping))
         }
         _ => bail!("cannot parse mapping"),
     }
